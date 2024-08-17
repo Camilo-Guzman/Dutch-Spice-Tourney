@@ -1,5 +1,4 @@
 local mod = get_mod("DutchSpiceTourney")
-
 local mutator = mod:persistent_table("DutchSpiceTourney")
 
 --[[
@@ -23,54 +22,54 @@ local enhancement_list = {
 	["regenerating"] = true,
 	["unstaggerable"] = true
 }
-local enhancement_1 = TerrorEventUtils.generate_enhanced_breed_from_list(enhancement_list)
+local enhancement_1 = TerrorEventUtils.generate_enhanced_breed_from_set(enhancement_list)
 
 local enhancement_list = {
 	["unstaggerable"] = true
 }
-local relentless = TerrorEventUtils.generate_enhanced_breed_from_list(enhancement_list)
+local relentless = TerrorEventUtils.generate_enhanced_breed_from_set(enhancement_list)
 
 local enhancement_list = {
 	["intangible"] = true
 }
-local enhancement_3 = TerrorEventUtils.generate_enhanced_breed_from_list(enhancement_list)
+local enhancement_3 = TerrorEventUtils.generate_enhanced_breed_from_set(enhancement_list)
 
 local enhancement_list = {
 	["ranged_immune"] = true
 }
-local enhancement_4 = TerrorEventUtils.generate_enhanced_breed_from_list(enhancement_list)
+local enhancement_4 = TerrorEventUtils.generate_enhanced_breed_from_set(enhancement_list)
 local enhancement_list = {
 	["commander"] = true
 }
-local enhancement_5 = TerrorEventUtils.generate_enhanced_breed_from_list(enhancement_list)
+local enhancement_5 = TerrorEventUtils.generate_enhanced_breed_from_set(enhancement_list)
 
 local enhancement_list = {
 	["regenerating"] = true
 }
-local enhancement_6 = TerrorEventUtils.generate_enhanced_breed_from_list(enhancement_list)
+local regenerating = TerrorEventUtils.generate_enhanced_breed_from_set(enhancement_list)
 local enhancement_list = {
 	["intangible"] = true,
 	["unstaggerable"] = true,
 	["crushing"] = true
 }
-local enhancement_7 = TerrorEventUtils.generate_enhanced_breed_from_list(enhancement_list)
+local enhancement_7 = TerrorEventUtils.generate_enhanced_breed_from_set(enhancement_list)
 local enhancement_list = {
 	["crushing"] = true
 }
-local shield_shatter = TerrorEventUtils.generate_enhanced_breed_from_list(enhancement_list)
+local shield_shatter = TerrorEventUtils.generate_enhanced_breed_from_set(enhancement_list)
 
-local weapon_balance_active = get_mod("Weapon Balance")
 local enemy_buffs_present = false
 
-if weapon_balance_active then
-	mod:echo("Custom Enemy buffs present")
-	enemy_buffs_present = true
+local function check_for_buffs()
+	if get_mod("Weapon Balance") then
+		mod:echo("Custom Enemy buffs present")
+		enemy_buffs_present = true
+	end
 end
 
 local function khorne_buff_spawn_function(unit, breed, optional_data)
 	if enemy_buffs_present then
 		local buff_system = Managers.state.entity:system("buff_system")
-		mod:echo("buffed")
 
 		buff_system:add_buff(unit, "ai_health_buff_dutch", unit)
 		buff_system:add_buff(unit, "khorne_buff_dutch_aoe", unit)
@@ -85,7 +84,6 @@ end
 local function tzeentch_buff_spawn_function(unit, breed, optional_data)
 	if enemy_buffs_present then
 		local buff_system = Managers.state.entity:system("buff_system")
-		mod:echo("buffed")
 
 		buff_system:add_buff(unit, "ai_health_buff_dutch", unit)
 		buff_system:add_buff(unit, "tzeentch_debuff_dutch_aoe", unit)
@@ -97,7 +95,6 @@ end
 local function slaanesh_buff_spawn_function(unit, breed, optional_data)
 	if enemy_buffs_present then
 		local buff_system = Managers.state.entity:system("buff_system")
-		mod:echo("buffed")
 
 		buff_system:add_buff(unit, "ai_health_buff_dutch", unit)
 		buff_system:add_buff(unit, "slaanesh_stagger_buff_dutch_aoe", unit)
@@ -109,7 +106,6 @@ end
 local function nurgle_buff_spawn_function(unit, breed, optional_data)
 	if enemy_buffs_present then
 		local buff_system = Managers.state.entity:system("buff_system")
-		mod:echo("buffed")
 
 		buff_system:add_buff(unit, "nurgle_debuff_dutch_aoe_movement", unit)
 		buff_system:add_buff(unit, "nurgle_debuff_dutch_aoe_attack_speed", unit)
@@ -262,16 +258,110 @@ mod:hook(TerrorEventMixer.init_functions, "control_specials", function (func, ev
 	end
 end)
 
+local NUM_FAR_OFF_CHECKS = 6
+local position_lookup = POSITION_LOOKUP
+
+mod:hook_origin(EnemyRecycler, "far_off_despawn", function (self, t, dt, player_positions, spawned)
+	local index = self.far_off_index or 1
+	local size = #spawned
+	local num = NUM_FAR_OFF_CHECKS
+
+	if size < num then
+		num = size
+		index = 1
+	end
+
+	local destroy_los_distance_squared = LevelHelper:current_level_settings().destroy_los_distance_squared or RecycleSettings.destroy_los_distance_squared
+	local nav_world = self.nav_world
+	local num_players = #player_positions
+
+	if num_players == 0 then
+		return
+	end
+
+	local Vector3_distance_squared = Vector3.distance_squared
+	local i = 1
+
+	while num >= i do
+		if size < index then
+			index = 1
+		end
+
+		local destroy_distance_squared = destroy_los_distance_squared
+		local ai_stuck = false
+		local unit = spawned[index]
+		local pos = position_lookup[unit]
+		local blackboard = BLACKBOARDS[unit]
+
+		if blackboard.stuck_check_time < t then
+			if not blackboard.far_off_despawn_immunity then
+				local navigation_extension = blackboard.navigation_extension
+
+				if navigation_extension._enabled and blackboard.no_path_found then
+					if not blackboard.stuck_time then
+						blackboard.stuck_time = t + 3
+					elseif blackboard.stuck_time < t then
+						ai_stuck = true
+						destroy_distance_squared = RecycleSettings.destroy_stuck_distance_squared
+						blackboard.stuck_time = nil
+					end
+				elseif not blackboard.no_path_found then
+					blackboard.stuck_time = nil
+				end
+			end
+
+			blackboard.stuck_check_time = t + 3 + i * dt
+		end
+
+		local num_players_far_away = 0
+
+		for j = 1, num_players, 1 do
+			if pos then
+				local player_pos = player_positions[j]
+				local dist_squared = Vector3_distance_squared(pos, player_pos)
+
+				if destroy_distance_squared < dist_squared then
+					num_players_far_away = num_players_far_away + 1
+				end
+			end
+		end
+
+		if num_players_far_away == num_players then
+			if ai_stuck then
+				print("Destroying unit - ai got stuck breed: %s index: %d size: %d action: %s", blackboard.breed.name, index, size, blackboard.action and blackboard.action.name)
+				self.conflict_director:destroy_unit(unit, blackboard, "stuck")
+			elseif not blackboard.far_off_despawn_immunity then
+				print("Destroying unit - ai too far away from all players. ", blackboard.breed.name, i, index, size)
+				self.conflict_director:destroy_unit(unit, blackboard, "far_away")
+			end
+
+			size = #spawned
+
+			if size == 0 then
+				break
+			end
+		end
+
+		index = index + 1
+		i = i + 1
+	end
+
+	self.far_off_index = index
+end)
+
 -- Dirty hook to work around lack of node in custom spawners.
 mod:hook(AISpawner, "spawn_unit", function (func, self)
-	local breed_name = nil
 	local breed_list = self._breed_list
 	local last = #breed_list
 	local spawn_data = breed_list[last]
+
 	breed_list[last] = nil
 	last = last - 1
+
 	local breed_name = breed_list[last]
+
 	breed_list[last] = nil
+
 	local breed = Breeds[breed_name]
 
 	--Because this one spawner won't work properly with bilechemists..
@@ -312,12 +402,26 @@ mod:hook(AISpawner, "spawn_unit", function (func, self)
 	local optional_data = {
 		side_id = side_id
 	}
+
+	local activate_version = self._activate_version
+	local spawned_func = optional_data.spawned_func
+
+	if spawned_func then
+		optional_data.spawned_func = function (spawned_unit, ...)
+			spawned_func(spawned_unit, ...)
+
+			if activate_version == self._activate_version then
+				self._spawned_units[#self._spawned_units + 1] = spawned_unit
+			end
+		end
+	end
+
 	local group_template = spawn_data[2]
 
-	conflict_director:spawn_queued_unit(breed, Vector3Box(spawn_pos), QuaternionBox(spawn_rotation), spawn_category, spawn_animation, spawn_type, optional_data, group_template)
-	conflict_director:add_horde(1)
+	self._num_queued_units = self._num_queued_units + 1
+	self._spawned_unit_handles[self._num_queued_units] = conflict_director:spawn_queued_unit(breed, Vector3Box(spawn_pos), QuaternionBox(spawn_rotation), spawn_category, spawn_animation, spawn_type, optional_data, group_template)
 
-	self._spawned_units = self._spawned_units + 1
+	conflict_director:add_horde(1)
 end)
 
 --Rewrite of threat calculation because the official function is unreliable and fails to remove units from the count.
@@ -553,6 +657,8 @@ mod:hook(StateIngame, "on_enter", function (func, self)
 			setup_custom_raw_spawner(self.world, "onslaught_pool_boss_1", Vector3(-163.64, 2.9, -15.9), Quaternion.from_elements(0, 0, -0.009, -0.999))
 			setup_custom_raw_spawner(self.world, "onslaught_pool_boss_2", Vector3(-152.19, -27.16, -10.2), Quaternion.from_elements(0, 0, -0.009, -0.999))
 			setup_custom_raw_spawner(self.world, "onslaught_pool_boss_3", Vector3(-114.17, -30, 0.3), Quaternion.from_elements(0, 0, 0.709, -0.705))
+			setup_custom_raw_spawner(self.world, "buffed_enemy_spawn_catacombs_1", Vector3(-104.181, -31.8771, -16.4793), Quaternion.from_elements(0, 0, -0.0190225, -0.999819))
+			setup_custom_raw_spawner(self.world, "buffed_enemy_spawn_catacombs_2", Vector3(-104.132, 42.2295, -16.4836), Quaternion.from_elements(0, 0, 0.988614, 0.150475))
 		elseif level_key == "mines" then
 			local onslaught_mines_bell_boss = World.spawn_unit(self.world, "units/hub_elements/empty", Vector3(216.879, -360.958, -15.0424), Quaternion.identity())
 			setup_custom_horde_spawner(onslaught_mines_bell_boss, "onslaught_mines_bell_boss", false)
@@ -682,6 +788,10 @@ mod:hook(StateIngame, "on_enter", function (func, self)
 			setup_custom_raw_spawner(self.world, "Festering_escape_event", Vector3(-372.268, 178.556, 8.52977), Quaternion.from_elements(0, 0, 0.37137, -0.928485))
 		elseif level_key == "fort" then
 			setup_custom_raw_spawner(self.world, "Fort_Big_SV", Vector3(-30.5291, -26.5151, 11.1644), Quaternion.from_elements(0, 0, 0.21516, -0.976579))
+		elseif level_key == "dlc_wizards_trail" then
+			setup_custom_raw_spawner(self.world, "buffed_enemy_spawn_1", Vector3(142.44, 15.5051, 346.302), Quaternion.from_elements(0, 0, -0.835503, -0.549487))
+			setup_custom_raw_spawner(self.world, "buffed_enemy_spawn_2", Vector3(38.835, 43.0437, 352.027), Quaternion.from_elements(0, 0, 0.909436, -0.415844))
+			setup_custom_raw_spawner(self.world, "buffed_enemy_spawn_3", Vector3(72.2291, -13.4926, 346), Quaternion.from_elements(0, 0, 0.106025, -0.994363))
 		end
 
 		local entity_manager = Managers.state.entity
@@ -855,7 +965,7 @@ mod:hook(Breeds.chaos_exalted_champion_warcamp, "run_on_update", function (func,
 	if blackboard.defensive_mode_duration then
 		local remaining = blackboard.defensive_mode_duration - dt
 
-		if remaining <= 0 or (remaining <= 15 and conflict_director:spawned_during_event() <= 20) then
+		if remaining <= 0 or (remaining <= 15 and conflict_director:enemies_spawned_during_event() <= 20) then
 			blackboard.defensive_mode_duration = nil
 		elseif remaining <= 15 and conflict_director:count_units_by_breed("chaos_berzerker") < 10 then
 			blackboard.defensive_mode_duration = nil
@@ -1143,16 +1253,14 @@ mutator.start = function()
 
 	mutator.OriginalBeastmenBannerBuff = BuffTemplates.healing_standard.buffs
 
-	--Non-event settings and compositions
+	mod:dofile("scripts/mods/DutchSpiceTourney/SpicyEnemies/Ambients")
+
+	--Enemy changes
 	Breeds.skaven_storm_vermin.bloodlust_health = BreedTweaks.bloodlust_health.beastmen_elite
 	Breeds.skaven_storm_vermin.primary_armor_category = 6
 	Breeds.skaven_storm_vermin.size_variation_range = { 1.23, 1.25 }
 	Breeds.skaven_storm_vermin.max_health = BreedTweaks.max_health.bestigor
 	Breeds.skaven_storm_vermin.hit_mass_counts = BreedTweaks.hit_mass_counts.bestigor
-	UnitVariationSettings.skaven_storm_vermin.material_variations.cloth_tint.min = 31
-	UnitVariationSettings.skaven_storm_vermin.material_variations.cloth_tint.max = 31
-	UnitVariationSettings.skaven_storm_vermin.material_variations.skin_tint.min = 1
-	UnitVariationSettings.skaven_storm_vermin.material_variations.skin_tint.max = 1
 	BuffTemplates.healing_standard.buffs = {
 		{
 			multiplier = 0.25,
@@ -1163,6 +1271,8 @@ mutator.start = function()
 	}
 	BeastmenStandardTemplates.healing_standard.radius = 10
 	UtilityConsiderations.beastmen_place_standard.distance_to_target.max_value = 15
+
+	--Non-event settings and compositions
 	RecycleSettings.max_grunts = 165
 	RecycleSettings.push_horde_if_num_alive_grunts_above = 300
 	PackSpawningSettings.default.area_density_coefficient = 0.15
@@ -1845,8 +1955,13 @@ mutator.start = function()
 				},
 				"skaven_storm_vermin_commander",
 				{
-					7,
-					8
+					3,
+					4
+				},
+				"skaven_dummy_slave",
+				{
+					3,
+					4
 				},
 			}
 		},
@@ -2263,8 +2378,13 @@ mutator.start = function()
 				},
 				"chaos_marauder_with_shield",
 				{
-					18,
-					20
+					12,
+					13
+				},
+				"skaven_dummy_clan_rat",
+				{
+					3,
+					4
 				},
 				"chaos_raider",
 				{
@@ -2324,8 +2444,13 @@ mutator.start = function()
 				},
 				"chaos_marauder_with_shield",
 				{
-					8,
-					10
+					5,
+					6
+				},
+				"skaven_dummy_clan_rat",
+				{
+					3,
+					4
 				},
 			}
 		},
@@ -2371,8 +2496,13 @@ mutator.start = function()
 				},
 				"chaos_marauder_with_shield",
 				{
-					8,
-					10
+					5,
+					6
+				},
+				"skaven_dummy_clan_rat",
+				{
+					3,
+					4
 				},
 				"chaos_berzerker",
 				{
@@ -2493,7 +2623,7 @@ mutator.start = function()
 					3,
 					4
 				},
-				"chaos_berzerker",
+				"chaos_marauder_tutorial",
 				{
 					3,
 					4
@@ -2516,8 +2646,13 @@ mutator.start = function()
 				},
 				"chaos_berzerker",
 				{
-					6,
-					8
+					4,
+					5
+				},
+				"chaos_marauder_tutorial",
+				{
+					2,
+					3
 				},
 				"chaos_warrior",
 				1
@@ -2549,8 +2684,13 @@ mutator.start = function()
 				},
 				"chaos_berzerker",
 				{
-					4,
-					6
+					2,
+					3
+				},
+				"chaos_marauder_tutorial",
+				{
+					2,
+					3
 				},
 			}
 		},
@@ -2573,7 +2713,7 @@ mutator.start = function()
 					3,
 					4
 				},
-				"chaos_berzerker",
+				"chaos_marauder_tutorial",
 				{
 					2,
 					3
@@ -2603,8 +2743,13 @@ mutator.start = function()
 				},
 				"chaos_berzerker",
 				{
-					4,
-					6
+					2,
+					3
+				},
+				"chaos_marauder_tutorial",
+				{
+					2,
+					3
 				},
 				"chaos_warrior",
 				1
@@ -2629,8 +2774,8 @@ mutator.start = function()
 				},
 				"chaos_berzerker",
 				{
-					7,
-					8
+					10,
+					12
 				}
 			}
 		},
@@ -2681,7 +2826,7 @@ mutator.start = function()
 					6,
 					7
 				},
-				"chaos_warrior",
+				"chaos_raider_tutorial",
 				1
 			}
 		},
@@ -2699,10 +2844,15 @@ mutator.start = function()
 					18,
 					20
 				},
+				"chaos_marauder_tutorial",
+				{
+					3,
+					4
+				},
 				"chaos_berzerker",
 				{
-					7,
-					8
+					3,
+					4
 				}
 			}
 		},
@@ -2867,7 +3017,7 @@ mutator.start = function()
 				},
 				"beastmen_bestigor",
 				{
-					2,
+					1,
 					2
 				}
 			}
@@ -2888,7 +3038,7 @@ mutator.start = function()
 				},
 				"beastmen_bestigor",
 				{
-					2,
+					1,
 					2
 				}
 			}
@@ -2902,20 +3052,25 @@ mutator.start = function()
 			breeds = {
 				"beastmen_gor",
 				{
-					35,
-					38
+					15,
+					16
+				},
+				"beastmen_gor_dummy",
+				{
+					5,
+					6
 				},
 				"beastmen_ungor",
 				{
-					10,
-					12
+					15,
+					16
 				},
 				"beastmen_bestigor",
 				{
 					4,
 					5
 				},
-				"chaos_warrior",
+				"beastmen_bestigor_dummy",
 				1
 			}
 		},
@@ -2925,29 +3080,29 @@ mutator.start = function()
 			breeds = {
 				"beastmen_gor",
 				{
-					30,
-					32
+					15,
+					16
+				},
+				"beastmen_gor_dummy",
+				{
+					5,
+					6
 				},
 				"beastmen_ungor",
 				{
-					10,
-					12
+					15,
+					16
 				},
 				"beastmen_bestigor",
 				{
-					4,
-					5
+					2,
+					3
 				},
-				"skaven_storm_vermin_with_shield",
+                "beastmen_bestigor_dummy",
 				{
 					1,
 					2
-				},
-				"skaven_storm_vermin_commander",
-				{
-					1,
-					2
-				},
+				}
 			}
 		},
 		{
@@ -2956,13 +3111,18 @@ mutator.start = function()
 			breeds = {
 				"beastmen_gor",
 				{
-					38,
-					40
+					15,
+					16
+				},
+				"beastmen_gor_dummy",
+				{
+					5,
+					6
 				},
 				"beastmen_ungor",
 				{
-					10,
-					12
+					15,
+					16
 				},
 				"beastmen_bestigor",
 				{
@@ -2971,13 +3131,8 @@ mutator.start = function()
 				},
 				"chaos_berzerker",
 				{
-					1,
-					2
-				},
-				"skaven_plague_monk",
-				{
-					1,
-					2
+					3,
+					4
 				},
 			}
 		},
@@ -2987,30 +3142,29 @@ mutator.start = function()
 			breeds = {
 				"beastmen_gor",
 				{
-					38,
-					40
+					15,
+					16
+				},
+				"beastmen_gor_dummy",
+				{
+					5,
+					6
 				},
 				"beastmen_ungor",
 				{
-					10,
-					12
+					15,
+					16
 				},
 				"beastmen_bestigor",
+				{
+					2,
+					3
+				},
+				"chaos_raider",
 				{
 					3,
 					4
 				},
-				"chaos_raider",
-				{
-					1,
-					2
-				},
-				"skaven_storm_vermin_commander",
-				{
-					1,
-					2
-				},
-
 			}
 
 		},
@@ -3023,29 +3177,24 @@ mutator.start = function()
 			breeds = {
 				"beastmen_gor",
 				{
-					30,
-					32
-				},
-				"chaos_marauder_with_shield",
-				{
-					3,
-					4
+					15,
+					16
 				},
 				"beastmen_ungor",
 				{
-					10,
-					12
+					15,
+					16
+				},
+				"chaos_marauder_with_shield",
+				{
+					5,
+					6
 				},
 				"beastmen_bestigor",
 				{
-					3,
-					4
-				},
-				"chaos_raider",
-				{
-					3,
-					4
-				},
+					5,
+					6
+				}
 			}
 		},
 		{
@@ -3054,18 +3203,23 @@ mutator.start = function()
 			breeds = {
 				"beastmen_gor",
 				{
-					38,
-					40
+					15,
+					16
+				},
+				"beastmen_gor_dummy",
+				{
+					5,
+					6
 				},
 				"beastmen_ungor",
 				{
-					10,
-					12
+					15,
+					16
 				},
 				"beastmen_bestigor",
 				{
-					3,
-					4
+					2,
+					3
 				},
 				"chaos_berzerker",
 				{
@@ -3080,18 +3234,23 @@ mutator.start = function()
 			breeds = {
 				"beastmen_gor",
 				{
-					38,
-					40
+					15,
+					16
+				},
+				"beastmen_gor_dummy",
+				{
+					5,
+					6
 				},
 				"beastmen_ungor",
 				{
-					10,
-					12
+					15,
+					16
 				},
 				"beastmen_bestigor",
 				{
-					7,
-					8
+					5,
+					6
 				}
 			}
 		},
@@ -3099,22 +3258,22 @@ mutator.start = function()
 			name = "leader",
 			weight = 7,
 			breeds = {
-				"beastmen_ungor",
+				"beastmen_gor",
 				{
-					35,
-					37
+					15,
+					16
+				},
+				"beastmen_gor_dummy",
+				{
+					5,
+					6
 				},
 				"beastmen_ungor",
 				{
-					10,
-					12
+					15,
+					16
 				},
-				"beastmen_bestigor",
-				{
-					3,
-					4
-				},
-				"skaven_plague_monk",
+				"beastmen_bestigor_dummy",
 				{
 					3,
 					4
@@ -3601,16 +3760,16 @@ mutator.start = function()
 				"chaos_warrior"
 			},
 			{
-				"chaos_marauder_with_shield",
-				"chaos_marauder_with_shield"
+				"chaos_marauder_tutorial",
+				"chaos_marauder_tutorial"
 			},
 			{
-				"chaos_warrior",
-				"chaos_warrior"
+				"chaos_raider_tutorial",
+				"chaos_raider_tutorial"
 			},
 			{
-				"chaos_marauder_with_shield",
-				"chaos_marauder_with_shield"
+				"chaos_marauder_tutorial",
+				"chaos_marauder_tutorial"
 			}
 		},
 		cataclysm = {
@@ -3966,30 +4125,30 @@ mutator.start = function()
 				"skaven_storm_vermin_with_shield"
 			},
 			{
+				"skaven_dummy_slave",
+				"skaven_dummy_slave"
+			},
+			{
 				"skaven_storm_vermin_with_shield",
+				"skaven_dummy_slave",
 				"skaven_storm_vermin_with_shield"
 			},
 			{
 				"skaven_storm_vermin_with_shield",
-				"skaven_storm_vermin_with_shield",
+				"skaven_dummy_slave",
+				"skaven_dummy_slave",
 				"skaven_storm_vermin_with_shield"
 			},
 			{
-				"skaven_storm_vermin_with_shield",
-				"skaven_storm_vermin_with_shield",
-				"skaven_storm_vermin_with_shield",
-				"skaven_storm_vermin_with_shield"
+				"skaven_dummy_slave",
+				"skaven_dummy_slave",
+				"skaven_dummy_slave",
+				"skaven_dummy_slave"
 			},
 			{
 				"skaven_storm_vermin_with_shield",
-				"skaven_storm_vermin_with_shield",
-				"skaven_storm_vermin_with_shield",
-				"skaven_storm_vermin_with_shield"
-			},
-			{
-				"skaven_storm_vermin_with_shield",
-				"skaven_storm_vermin_with_shield",
-				"skaven_storm_vermin_with_shield",
+				"skaven_dummy_slave",
+				"skaven_dummy_slave",
 				"skaven_storm_vermin_with_shield"
 			},
 			{
@@ -4006,202 +4165,203 @@ mutator.start = function()
 			}
 		}
 	}
+
 
 
 	PatrolFormationSettings.beastmen_standard = {
-		settings = {
-			sounds = {
-				PLAYER_SPOTTED = "beastmen_patrol_player_spotted",
-				FORMING = "beastmen_patrol_forming",
-				FOLEY = "beastmen_patrol_foley",
-				FORMATED = "beastmen_patrol_formated",
-				FORMATE = "beastmen_patrol_formate",
-				CHARGE = "beastmen_patrol_charge",
-				VOICE = "beastmen_patrol_voice"
+			settings = {
+				sounds = {
+					PLAYER_SPOTTED = "beastmen_patrol_player_spotted",
+					FORMING = "beastmen_patrol_forming",
+					FOLEY = "beastmen_patrol_foley",
+					FORMATED = "beastmen_patrol_formated",
+					FORMATE = "beastmen_patrol_formate",
+					CHARGE = "beastmen_patrol_charge",
+					VOICE = "beastmen_patrol_voice"
+				},
+				offsets = {
+					ANCHOR_OFFSET = {
+						x = 1.4,
+						y = 0.6
+					}
+				},
+				speeds = {
+					FAST_WALK_SPEED = 2.6,
+					MEDIUM_WALK_SPEED = 2.35,
+					WALK_SPEED = 2.12,
+					SPLINE_SPEED = 2.22,
+					SLOW_SPLINE_SPEED = 0.1
+				},
 			},
-			offsets = {
-				ANCHOR_OFFSET = {
-					x = 1.4,
-					y = 0.6
+			normal = {
+				{
+					"beastmen_standard_bearer"
+				},
+				{
+					"beastmen_bestigor"
+				},
+				{
+					"beastmen_bestigor"
+				},
+				{
+					"beastman_ungor",
+					"beastman_ungor"
+				},
+				{
+					"beastmen_gor_dummy",
+					"beastmen_gor_dummy"
+				},
+				{
+					"beastmen_bestigor_dummy",
+					"beastmen_bestigor_dummy"
+				},
+				{
+					"beastmen_gor_dummy",
+					"beastmen_gor_dummy"
 				}
 			},
-			speeds = {
-				FAST_WALK_SPEED = 2.6,
-				MEDIUM_WALK_SPEED = 2.35,
-				WALK_SPEED = 2.12,
-				SPLINE_SPEED = 2.22,
-				SLOW_SPLINE_SPEED = 0.1
+			hard = {
+				{
+					"beastmen_standard_bearer"
+				},
+				{
+					"beastmen_bestigor"
+				},
+				{
+					"beastman_ungor",
+					"beastman_ungor"
+				},
+				{
+					"beastmen_bestigor",
+					"beastmen_bestigor"
+				},
+				{
+					"beastman_ungor",
+					"beastman_ungor"
+				},
+				{
+					"beastmen_bestigor"
+				},
+				{
+					"beastmen_gor",
+					"beastmen_gor"
+				}
 			},
-		},
-		normal = {
-			{
-				"beastmen_standard_bearer"
+			harder = {
+				{
+					"beastmen_standard_bearer"
+				},
+				{
+					"beastmen_bestigor",
+					"beastmen_bestigor"
+				},
+				{
+					"beastmen_gor",
+					"beastmen_gor"
+				},
+				{
+					"beastmen_bestigor",
+					"beastmen_bestigor"
+				},
+				{
+					"beastmen_gor",
+					"beastmen_gor"
+				},
+				{
+					"beastmen_bestigor",
+					"beastmen_bestigor"
+				},
+				{
+					"beastmen_gor",
+					"beastmen_gor"
+				}
 			},
-			{
-				"beastmen_bestigor"
+			hardest = {
+				{
+					"beastmen_standard_bearer"
+				},
+				{
+					"beastmen_gor",
+					"beastmen_gor"
+				},
+				{
+					"beastmen_bestigor",
+					"beastmen_bestigor"
+				},
+				{
+					"beastmen_gor",
+					"beastmen_gor"
+				},
+				{
+					"beastmen_bestigor",
+					"beastmen_bestigor"
+				},
+				{
+					"beastmen_bestigor",
+					"beastmen_bestigor"
+				},
+				{
+					"beastmen_gor",
+					"beastmen_gor"
+				},
+				{
+					"beastmen_gor",
+					"beastmen_gor"
+				},
+				{
+					"beastmen_gor",
+					"beastmen_gor"
+				}
 			},
-			{
-				"beastmen_bestigor"
-			},
-			{
-				"beastman_ungor",
-				"beastman_ungor"
-			},
-			{
-				"beastman_ungor",
-				"beastman_ungor"
-			},
-			{
-				"beastmen_bestigor"
-			},
-			{
-				"beastmen_gor",
-				"beastmen_gor"
-			}
-		},
-		hard = {
-			{
-				"beastmen_standard_bearer"
-			},
-			{
-				"beastmen_bestigor"
-			},
-			{
-				"beastman_ungor",
-				"beastman_ungor"
-			},
-			{
-				"beastmen_bestigor",
-				"beastmen_bestigor"
-			},
-			{
-				"beastman_ungor",
-				"beastman_ungor"
-			},
-			{
-				"beastmen_bestigor"
-			},
-			{
-				"beastmen_gor",
-				"beastmen_gor"
-			}
-		},
-		harder = {
-			{
-				"beastmen_standard_bearer"
-			},
-			{
-				"beastmen_bestigor",
-				"beastmen_bestigor"
-			},
-			{
-				"beastmen_gor",
-				"beastmen_gor"
-			},
-			{
-				"beastmen_bestigor",
-				"beastmen_bestigor"
-			},
-			{
-				"beastmen_gor",
-				"beastmen_gor"
-			},
-			{
-				"beastmen_bestigor",
-				"beastmen_bestigor"
-			},
-			{
-				"beastmen_gor",
-				"beastmen_gor"
-			}
-		},
-		hardest = {
-			{
-				"beastmen_standard_bearer"
-			},
-			{
-				"beastmen_gor",
-				"beastmen_gor"
-			},
-			{
-				"beastmen_bestigor",
-				"beastmen_bestigor"
-			},
-			{
-				"beastmen_gor",
-				"beastmen_gor"
-			},
-			{
-				"beastmen_bestigor",
-				"beastmen_bestigor"
-			},
-			{
-				"beastmen_bestigor",
-				"beastmen_bestigor"
-			},
-			{
-				"beastmen_gor",
-				"beastmen_gor"
-			},
-			{
-				"beastmen_gor",
-				"beastmen_gor"
-			},
-			{
-				"beastmen_gor",
-				"beastmen_gor"
-			}
-		},
-		cataclysm = {
-			{
-				"beastmen_standard_bearer"
-			},
-			{
-				"beastmen_bestigor",
-				"beastmen_bestigor"
-			},
-			{
-				"beastmen_bestigor",
-				"beastmen_bestigor"
-			},
-			{
-				"beastmen_bestigor",
-				"beastmen_bestigor"
-			},
-			{
-				"beastmen_bestigor",
-				"beastmen_bestigor"
-			},
-			{
-				"beastmen_bestigor",
-				"beastmen_bestigor"
-			},
-			{
-				"beastmen_bestigor",
-				"beastmen_bestigor"
-			},
-			{
-				"beastmen_standard_bearer",
-				"beastmen_standard_bearer"
-			},
-			{
-				"beastmen_bestigor",
-				"beastmen_bestigor"
-			},
-			{
-				"beastmen_bestigor",
-				"beastmen_bestigor"
-			},
-			{
-				"beastmen_bestigor",
-				"beastmen_bestigor"
-			},
-			{
-				"beastmen_bestigor",
-				"beastmen_bestigor"
+			cataclysm = {
+				{
+					"beastmen_standard_bearer"
+				},
+				{
+					"beastmen_bestigor",
+					"beastmen_bestigor"
+				},
+				{
+					"beastmen_bestigor_dummy",
+					"beastmen_bestigor_dummy"
+				},
+				{
+					"beastmen_bestigor",
+					"beastmen_bestigor"
+				},
+				{
+					"beastmen_bestigor",
+					"beastmen_bestigor"
+				},
+				{
+					"beastmen_bestigor",
+					"beastmen_bestigor"
+				},
+				{
+					"beastmen_standard_bearer",
+					"beastmen_standard_bearer"
+				},
+				{
+					"beastmen_bestigor",
+					"beastmen_bestigor"
+				},
+				{
+					"beastmen_bestigor_dummy",
+					"beastmen_bestigor_dummy"
+				},
+				{
+					"beastmen_bestigor",
+					"beastmen_bestigor"
+				},
+				{
+					"beastmen_bestigor",
+					"beastmen_bestigor"
+				}
 			}
 		}
-	}
+
+
+
 
 	---------------------
 	--Generic event spawnsets
@@ -4976,6 +5136,25 @@ mutator.start = function()
 		}
 	}
 
+	HordeCompositions.onslaught_storm_vermin_shields_large = {
+		{
+			name = "somevermin",
+			weight = 3,
+			breeds = {
+				"skaven_storm_vermin_with_shield",
+				{
+					2,
+					3
+				},
+				"skaven_dummy_slave",
+				{
+					2,
+					3
+				}
+			},
+		}
+	}
+
 	HordeCompositions.onslaught_event_military_courtyard_plague_monks = {
 		{
 			name = "mixed",
@@ -5124,6 +5303,20 @@ mutator.start = function()
 			weight = 10,
 			breeds = {
 				"chaos_raider",
+				{
+					5,
+					6
+				}
+			}
+		}
+	}
+
+	HordeCompositions.event_marauder_special = {
+		{
+			name = "plain",
+			weight = 10,
+			breeds = {
+				"chaos_marauder_tutorial",
 				{
 					5,
 					6
@@ -7963,23 +8156,65 @@ mutator.start = function()
 		{
 			"spawn_at_raw",
 			spawner_id = "onslaught_pool_boss_1",
-			breed_name = {
-				"chaos_spawn",
-				"beastmen_minotaur"
+			breed_name = "chaos_spawn",
+			optional_data = {
+				enhancements = regenerating
 			}
-
 		},
 		{
 			"spawn_at_raw",
-			spawner_id = "onslaught_pool_boss_2",
-			breed_name = "chaos_troll"
+			spawner_id = "buffed_enemy_spawn_catacombs_1",
+			breed_name = "chaos_raider_tutorial",
+			optional_data = {
+				spawned_func = nurgle_buff_spawn_function
+			}
 		},
 		{
 			"spawn_at_raw",
-			spawner_id = "onslaught_pool_boss_3",
-			breed_name = {
-				"skaven_rat_ogre",
-				"skaven_stormfiend"
+			spawner_id = "buffed_enemy_spawn_catacombs_2",
+			breed_name = "chaos_raider_tutorial",
+			optional_data = {
+				spawned_func = nurgle_buff_spawn_function
+			}
+		},
+		{
+			"delay",
+			duration = 60
+		},
+		{
+			"spawn_at_raw",
+			spawner_id = "buffed_enemy_spawn_catacombs_1",
+			breed_name = "chaos_raider_tutorial",
+			optional_data = {
+				spawned_func = nurgle_buff_spawn_function
+			}
+		},
+		{
+			"spawn_at_raw",
+			spawner_id = "buffed_enemy_spawn_catacombs_2",
+			breed_name = "chaos_raider_tutorial",
+			optional_data = {
+				spawned_func = nurgle_buff_spawn_function
+			}
+		},
+		{
+			"delay",
+			duration = 60
+		},
+		{
+			"spawn_at_raw",
+			spawner_id = "buffed_enemy_spawn_catacombs_1",
+			breed_name = "chaos_raider_tutorial",
+			optional_data = {
+				spawned_func = nurgle_buff_spawn_function
+			}
+		},
+		{
+			"spawn_at_raw",
+			spawner_id = "buffed_enemy_spawn_catacombs_2",
+			breed_name = "chaos_raider_tutorial",
+			optional_data = {
+				spawned_func = nurgle_buff_spawn_function
 			}
 		}
 	}
@@ -11362,7 +11597,7 @@ mutator.start = function()
 	TerrorEventBlueprints.fort.fort_terror_event_climb = {
 		{
 			"set_freeze_condition",
-			max_active_enemies = 100
+			max_active_enemies = 125
 		},
 		{
 			"set_master_event_running",
@@ -11416,7 +11651,7 @@ mutator.start = function()
 			"continue_when",
 			duration = 20,
 			condition = function (t)
-				return count_event_breed("skaven_slave") < 24 and count_event_breed("skaven_clan_rat") < 12 and count_event_breed("skaven_clan_rat_with_shield") < 6 and count_event_breed("skaven_storm_vermin_commander") < 6
+				return count_event_breed("skaven_slave") < 36 and count_event_breed("skaven_clan_rat") < 24 and count_event_breed("skaven_clan_rat_with_shield") < 20 and count_event_breed("skaven_storm_vermin_commander") < 12
 			end
 		},
 		{
@@ -11456,7 +11691,7 @@ mutator.start = function()
 			"continue_when",
 			duration = 30,
 			condition = function (t)
-				return count_event_breed("chaos_fanatic") < 16 and count_event_breed("chaos_raider") < 6 and count_event_breed("chaos_marauder") < 10 and count_event_breed("chaos_marauder_with_shield") < 7
+				return count_event_breed("chaos_fanatic") < 40 and count_event_breed("chaos_raider") < 12 and count_event_breed("chaos_marauder") < 30 and count_event_breed("chaos_marauder_with_shield") < 15
 			end
 		},
 		{
@@ -12341,7 +12576,7 @@ mutator.start = function()
 		{
 			"continue_when",
 			condition = function (t)
-				return count_event_breed("skaven_stormfiend") == 1
+				return count_event_breed("skaven_rat_ogre") == 1
 			end
 		},
 		{
@@ -12467,7 +12702,7 @@ mutator.start = function()
 		{
 			"continue_when",
 			condition = function (t)
-				return count_event_breed("chaos_spawn") == 1
+				return count_event_breed("beastmen_minotaur") == 1
 			end
 		},
 		{
@@ -13858,21 +14093,24 @@ mutator.start = function()
 			"spawn_at_raw",
 			spawner_id = "onslaught_gate_spawner_1",
 			breed_name = "chaos_warrior",
-			optional_data = {
-				spawned_func = slaanesh_buff_spawn_function
-			}
 		},
 		{
 			"spawn_at_raw",
 			spawner_id = "onslaught_gate_spawner_2",
 			breed_name = "chaos_warrior",
-			optional_data = {
-				spawned_func = tzeentch_buff_spawn_function
-			}
 		},
 		{
 			"spawn_at_raw",
 			spawner_id = "onslaught_gate_spawner_3",
+			breed_name = "chaos_warrior",
+		},
+		{
+			"delay",
+			duration = 0.8
+		},
+		{
+			"spawn_at_raw",
+			spawner_id = "gate_spawner_1",
 			breed_name = "chaos_warrior",
 			optional_data = {
 				spawned_func = nurgle_buff_spawn_function
@@ -13884,23 +14122,8 @@ mutator.start = function()
 		},
 		{
 			"spawn_at_raw",
-			spawner_id = "gate_spawner_1",
-			breed_name = "chaos_warrior",
-			optional_data = {
-				spawned_func = khorne_buff_spawn_function
-			}
-		},
-		{
-			"delay",
-			duration = 0.8
-		},
-		{
-			"spawn_at_raw",
 			spawner_id = "gate_spawner_2",
 			breed_name = "chaos_warrior",
-			optional_data = {
-				spawned_func = khorne_buff_spawn_function
-			}
 		}
 	}
 
@@ -15996,7 +16219,7 @@ mutator.start = function()
 		{
 			"spawn_at_raw",
 			spawner_id = "Festering_loop_event_1",
-			breed_name = "chaos_warrior",
+			breed_name = "chaos_raider_tutorial",
 			optional_data = {
 				spawned_func = nurgle_buff_spawn_function,
 				size_variation_range = {
@@ -16066,7 +16289,7 @@ mutator.start = function()
 		{
 			"spawn_at_raw",
 			spawner_id = "Festering_loop_event_1",
-			breed_name = "chaos_warrior",
+			breed_name = "chaos_raider_tutorial",
 			optional_data = {
 				spawned_func = nurgle_buff_spawn_function,
 				size_variation_range = {
@@ -16309,7 +16532,7 @@ mutator.start = function()
 		{
 			"spawn_at_raw",
 			spawner_id = "Festering_escape_event",
-			breed_name = "chaos_warrior",
+			breed_name = "chaos_raider_tutorial",
 			optional_data = {
 				spawned_func = nurgle_buff_spawn_function,
 				size_variation_range = {
@@ -16535,7 +16758,7 @@ mutator.start = function()
 			"event_horde",
 			limit_spawners = 1,
 			spawner_id = "payload_event_r",
-			composition_type = "event_maulers_medium"
+			composition_type = "event_marauder_special"
 		},
 		{
 			"event_horde",
@@ -16564,7 +16787,7 @@ mutator.start = function()
 			"event_horde",
 			limit_spawners = 1,
 			spawner_id = "payload_event_l",
-			composition_type = "event_maulers_medium"
+			composition_type = "event_marauder_special"
 		},
 		{
 			"event_horde",
@@ -16576,7 +16799,7 @@ mutator.start = function()
 			"event_horde",
 			limit_spawners = 1,
 			spawner_id = "payload_event_r",
-			composition_type = "event_maulers_medium"
+			composition_type = "event_marauder_special"
 		},
 		{
 			"delay",
@@ -16596,7 +16819,7 @@ mutator.start = function()
 			"event_horde",
 			limit_spawners = 1,
 			spawner_id = "payload_event_l",
-			composition_type = "event_maulers_medium"
+			composition_type = "event_marauder_special"
 		},
 		{
 			"delay",
@@ -16612,7 +16835,7 @@ mutator.start = function()
 			"event_horde",
 			limit_spawners = 1,
 			spawner_id = "payload_event_r",
-			composition_type = "event_maulers_medium"
+			composition_type = "event_marauder_special"
 		},
 		{
 			"delay",
@@ -16697,7 +16920,7 @@ mutator.start = function()
 			"event_horde",
 			limit_spawners = 1,
 			spawner_id = "payload_event_l",
-			composition_type = "event_maulers_medium"
+			composition_type = "event_marauder_special"
 		},
 		{
 			"delay",
@@ -16731,7 +16954,7 @@ mutator.start = function()
 			"event_horde",
 			limit_spawners = 1,
 			spawner_id = "payload_event_r",
-			composition_type = "event_maulers_medium"
+			composition_type = "event_marauder_special"
 		},
 		{
 			"event_horde",
@@ -16796,7 +17019,7 @@ mutator.start = function()
 			"event_horde",
 			limit_spawners = 1,
 			spawner_id = "payload_event_l",
-			composition_type = "event_maulers_medium"
+			composition_type = "event_marauder_special"
 		},
 		{
 			"event_horde",
@@ -16839,7 +17062,7 @@ mutator.start = function()
 			"event_horde",
 			limit_spawners = 1,
 			spawner_id = "payload_event_l",
-			composition_type = "event_maulers_medium"
+			composition_type = "event_marauder_special"
 		},
 		{
 			"event_horde",
@@ -16924,13 +17147,13 @@ mutator.start = function()
 			"event_horde",
 			limit_spawners = 1,
 			spawner_id = "payload_event_l",
-			composition_type = "event_maulers_medium"
+			composition_type = "event_marauder_special"
 		},
 		{
 			"event_horde",
 			limit_spawners = 1,
 			spawner_id = "payload_event_l",
-			composition_type = "event_maulers_medium"
+			composition_type = "event_marauder_special"
 		},
 		{
 			"event_horde",
@@ -16975,10 +17198,15 @@ mutator.start = function()
 					6,
 					8
 				},
+				"chaos_marauder_tutorial",
+				{
+					3,
+					4
+				},
 				"chaos_berzerker",
 				{
-					6,
-					7
+					3,
+					4
 				}
 			}
 		},
@@ -16991,6 +17219,11 @@ mutator.start = function()
 					6,
 					8
 				},
+				"chaos_marauder_tutorial",
+				{
+					3,
+					4
+				},
 				"chaos_raider",
 				{
 					2,
@@ -16998,8 +17231,8 @@ mutator.start = function()
 				},
 				"chaos_berzerker",
 				{
-					5,
-					6
+					2,
+					3
 				}
 			}
 		}
@@ -17020,7 +17253,7 @@ mutator.start = function()
 					10,
 					12
 				},
-				"chaos_berzerker",
+				"chaos_marauder_tutorial",
 				{
 					5,
 					6
@@ -17051,10 +17284,15 @@ mutator.start = function()
 					10,
 					11
 				},
+				"chaos_marauder_tutorial",
+				{
+					5,
+					6
+				},
 				"chaos_berzerker",
 				{
-					10,
-					12
+					8,
+					9
 				}
 			}
 		},
@@ -17067,7 +17305,12 @@ mutator.start = function()
 					4,
 					5
 				},
-				"chaos_berzerker",
+				"chaos_marauder",
+				{
+					6,
+					7
+				},
+				"chaos_marauder_tutorial",
 				{
 					6,
 					7
@@ -17720,7 +17963,7 @@ mutator.start = function()
 			spawner_id = "onslaught_slum_boss_event",
 			breed_name = "chaos_troll",
 			optional_data = {
-				enhancements = enhancement_6
+				enhancements = regenerating
 			}
 		},
 		{
@@ -19005,7 +19248,7 @@ mutator.start = function()
 		{
 			"spawn_at_raw",
 			spawner_id = "onslaught_button_window1",
-			breed_name = "storm_vermin",
+			breed_name = "skaven_storm_vermin",
 			optional_data = {
 				spawned_func = slaanesh_buff_spawn_function
 			}
@@ -19013,7 +19256,7 @@ mutator.start = function()
 		{
 			"spawn_at_raw",
 			spawner_id = "onslaught_button_hidden",
-			breed_name = "storm_vermin",
+			breed_name = "skaven_storm_vermin",
 			optional_data = {
 				spawned_func = slaanesh_buff_spawn_function
 			}
@@ -19021,7 +19264,7 @@ mutator.start = function()
 		{
 			"spawn_at_raw",
 			spawner_id = "onslaught_button_front4",
-			breed_name = "storm_vermin",
+			breed_name = "skaven_storm_vermin",
 			optional_data = {
 				spawned_func = slaanesh_buff_spawn_function
 			}
@@ -19214,7 +19457,7 @@ mutator.start = function()
 		{
 			"spawn_at_raw",
 			spawner_id = "onslaught_button_front2",
-			breed_name = "khorne_buff_spawn_function",
+			breed_name = "chaos_warrior",
 			optional_data = {
 				spawned_func = khorne_buff_spawn_function
 			}
@@ -19259,7 +19502,7 @@ mutator.start = function()
 		{
 			"spawn_at_raw",
 			spawner_id = "onslaught_button_front2",
-			breed_name = "khorne_buff_spawn_function",
+			breed_name = "chaos_warrior",
 			optional_data = {
 				spawned_func = khorne_buff_spawn_function
 			}
@@ -19309,7 +19552,7 @@ mutator.start = function()
 			breed_name = "chaos_spawn",
 			optional_data = {
 				max_health_modifier = 0.75,
-				enhancements = enhancement_6
+				enhancements = regenerating
 			}
 		},
 		{
@@ -26596,6 +26839,1269 @@ mutator.start = function()
 		start_time = 0
 	}
 
+	--Trail of Treachery
+
+	TerrorEventBlueprints.dlc_wizards_trail.trail_disable_pacing_mid = {
+		{
+			"control_specials",
+			enable = true
+		},
+		{
+			"control_pacing",
+			enable = true
+		}
+	}
+
+	--First Drop
+
+	TerrorEventBlueprints.dlc_wizards_trail.trail_enable_pacing_mid = {
+		{
+			"control_specials",
+			enable = true
+		},
+		{
+			"control_pacing",
+			enable = true
+		},
+	}
+
+	TerrorEventBlueprints.dlc_wizards_trail.trail_disable_pacing_light = {
+		{
+			"control_specials",
+			enable = true
+		},
+		{
+			"control_pacing",
+			enable = true
+		},
+	}
+
+	TerrorEventBlueprints.dlc_wizards_trail.trail_enable_pacing_light = {
+		{
+			"control_specials",
+			enable = true
+		},
+		{
+			"control_pacing",
+			enable = true
+		},
+	}
+
+	TerrorEventBlueprints.dlc_wizards_trail.trail_drawbridge_wallbreaker = {
+		{
+			"spawn_at_raw",
+			spawner_id = "drawbridge_wall_breaker_01",
+			breed_name = {
+				"skaven_dummy_slave"
+			},
+			optional_data = {
+				spawned_func = tzeentch_buff_spawn_function
+			}
+		},
+		{
+			"delay",
+			duration = 3
+		},
+		{
+			"spawn_at_raw",
+			spawner_id = "drawbridge_wall_breaker_02",
+			breed_name = {
+				"skaven_dummy_slave"
+			},
+			optional_data = {
+				spawned_func = tzeentch_buff_spawn_function
+			}
+		}
+	}
+
+	TerrorEventBlueprints.dlc_wizards_trail.trail_grim_path_ambush = {
+		{
+			"spawn_at_raw",
+			spawner_id = "path_ambush_spawner_01",
+			amount = 1,
+			breed_name = {
+				"skaven_stormfiend"
+			}
+		},
+		{
+			"delay",
+			duration = 10
+		},
+		{
+			"spawn_at_raw",
+			spawner_id = "path_ambush_spawner_02",
+			amount = 1,
+			breed_name = {
+				"chaos_spawn"
+			}
+		},
+		{
+			"delay",
+			duration = 10
+		},
+		{
+			"continue_when",
+			duration = 60,
+			condition = function (t)
+				return count_event_breed("skaven_poison_wind_globadier", "skaven_ratling_gunner", "skaven_warpfire_thrower") < 2
+			end
+		},
+		{
+			"delay",
+			duration = 3
+		}
+	}
+
+	TerrorEventBlueprints.dlc_wizards_trail.trail_mid_event_recons = {
+		{
+			"spawn_special",
+			amount = 1,
+			breed_name = {
+				"skaven_pack_master",
+				"skaven_gutter_runner",
+				"skaven_warpfire_thrower",
+				"skaven_ratling_gunner"
+			}
+		},
+		{
+			"delay",
+			duration = 2
+		},
+		{
+			"spawn_at_raw",
+			spawner_id = "trail_mid_event_recons_special_02",
+			amount = 1,
+			breed_name = {
+				"skaven_poison_wind_globadier",
+				"skaven_pack_master",
+				"skaven_warpfire_thrower"
+			}
+		},
+		{
+			"delay",
+			duration = 5
+		},
+		{
+			"flow_event",
+			flow_event_name = "trail_mid_event_recons_done"
+		}
+	}
+
+	--Mid First lever
+	TerrorEventBlueprints.dlc_wizards_trail.trail_mid_event_01 = {
+		{
+			"set_master_event_running",
+			name = "trail_mid_event_01"
+		},
+		{
+			"disable_kick"
+		},
+		{
+			"enable_bots_in_carry_event"
+		},
+		{
+			"set_freeze_condition",
+			max_active_enemies = 100
+		},
+		{
+			"control_hordes",
+			enable = false
+		},
+		{
+			"event_horde",
+			spawner_id = "trail_mid_event_spawn_01",
+			composition_type = "event_medium"
+		},
+		{
+			"event_horde",
+			spawner_id = "trail_mid_event_spawn_02",
+			composition_type = "onslaught_storm_vermin_white_medium"
+		},
+		{
+			"event_horde",
+			spawner_id = "trail_mid_event_spawn_02",
+			composition_type = "onslaught_storm_vermin_white_medium"
+		},
+		{
+			"spawn_at_raw",
+			spawner_id = "buffed_enemy_spawn_1",
+			breed_name = "skaven_dummy_slave",
+			optional_data = {
+				spawned_func = slaanesh_buff_spawn_function()
+			}
+		},
+		{
+			"spawn_at_raw",
+			spawner_id = "buffed_enemy_spawn_2",
+			breed_name = "skaven_dummy_slave",
+			optional_data = {
+				spawned_func = slaanesh_buff_spawn_function()
+			}
+		},
+		{
+			"spawn_at_raw",
+			spawner_id = "buffed_enemy_spawn_3",
+			breed_name = "skaven_dummy_slave",
+			optional_data = {
+				spawned_func = slaanesh_buff_spawn_function()
+			}
+		},
+		{
+			"delay",
+			duration = 5
+		},
+		{
+			"spawn_special",
+			amount = 1,
+			breed_name = {
+				"skaven_ratling_gunner",
+				"skaven_gutter_runner"
+			}
+		},
+		{
+			"delay",
+			duration = 5
+		},
+		{
+			"continue_when",
+			duration = 30,
+			condition = function (t)
+				return num_spawned_enemies() < 20
+			end
+		},
+		{
+			"event_horde",
+			limit_spawners = 6,
+			spawner_id = "trail_mid_event_spawn_02",
+			composition_type = "event_medium"
+		},
+		{
+			"delay",
+			duration = 10
+		},
+		{
+			"spawn_special",
+			breed_name = {
+				"chaos_corruptor_sorcerer",
+				"chaos_vortex_sorcerer",
+				"skaven_gutter_runner"
+			}
+		},
+		{
+			"event_horde",
+			limit_spawners = 4,
+			spawner_id = "trail_mid_event_spawn_roof",
+			composition_type = "event_extra_spice_medium"
+		},
+		{
+			"delay",
+			duration = 5
+		},
+		{
+			"continue_when",
+			duration = 30,
+			condition = function (t)
+				return num_spawned_enemies() < 8
+			end
+		},
+		{
+			"event_horde",
+			spawner_id = "trail_mid_event_spawn_02",
+			composition_type = "plague_monks_medium"
+		},
+		{
+			"spawn_special",
+			amount = 1,
+			breed_name = {
+				"skaven_pack_master",
+				"skaven_gutter_runner",
+				"skaven_warpfire_thrower",
+				"skaven_ratling_gunner"
+			}
+		},
+		{
+			"event_horde",
+			limit_spawners = 6,
+			spawner_id = "trail_mid_event_spawn_02",
+			composition_type = "event_medium"
+		},
+		{
+			"event_horde",
+			spawner_id = "trail_mid_event_spawn_02",
+			composition_type = "onslaught_storm_vermin_medium"
+		},
+		{
+			"delay",
+			duration = 5
+		},
+		{
+			"spawn_at_raw",
+			spawner_id = "trail_mid_event_02",
+			breed_name = {
+				"skaven_ratling_gunner",
+				"skaven_poison_wind_globadier",
+				"skaven_warpfire_thrower",
+				"skaven_pack_master"
+			},
+			difficulty_amount = {
+				hardest = 2,
+				hard = 1,
+				harder = 1,
+				cataclysm = 2,
+				normal = 1
+			}
+		},
+		{
+			"event_horde",
+			spawner_id = "trail_mid_event_spawn_02",
+			composition_type = "event_extra_spice_small"
+		},
+		{
+			"spawn_at_raw",
+			spawner_id = "trail_mid_event_02",
+			breed_name = "skaven_pack_master"
+		},
+		{
+			"event_horde",
+			spawner_id = "trail_mid_event_spawn_02",
+			composition_type = "onslaught_storm_vermin_white_medium"
+		},
+		{
+			"delay",
+			duration = 5
+		},
+		{
+			"continue_when",
+			duration = 30,
+			condition = function (t)
+				return num_spawned_enemies() < 8
+			end
+		},
+		{
+			"spawn_at_raw",
+			spawner_id = "trail_mid_event_02",
+			breed_name = "skaven_warpfire_thrower"
+		},
+		{
+			"event_horde",
+			limit_spawners = 4,
+			spawner_id = "trail_mid_event_spawn_03",
+			composition_type = "event_extra_spice_large"
+		},
+		{
+			"event_horde",
+			limit_spawners = 4,
+			spawner_id = "trail_mid_event_spawn_roof",
+			composition_type = "event_small"
+		},
+		{
+			"spawn_at_raw",
+			spawner_id = "buffed_enemy_spawn_1",
+			breed_name = "skaven_dummy_slave",
+			optional_data = {
+				spawned_func = tzeentch_buff_spawn_function
+			}
+		},
+		{
+			"spawn_at_raw",
+			spawner_id = "buffed_enemy_spawn_2",
+			breed_name = "skaven_dummy_slave",
+			optional_data = {
+				spawned_func = tzeentch_buff_spawn_function
+			}
+		},
+		{
+			"spawn_at_raw",
+			spawner_id = "buffed_enemy_spawn_3",
+			breed_name = "skaven_dummy_slave",
+			optional_data = {
+				spawned_func = tzeentch_buff_spawn_function
+			}
+		},
+		{
+			"delay",
+			duration = 20
+		},
+		{
+			"spawn_special",
+			amount = 1,
+			breed_name = {
+				"skaven_pack_master",
+				"skaven_gutter_runner",
+				"skaven_warpfire_thrower",
+				"skaven_ratling_gunner"
+			}
+		},
+		{
+			"spawn_special",
+			amount = 1,
+			breed_name = {
+				"skaven_pack_master",
+				"skaven_poison_wind_globadier"
+			}
+		},
+		{
+			"spawn_special",
+			amount = 1,
+			breed_name = {
+				"chaos_corruptor_sorcerer",
+				"chaos_vortex_sorcerer",
+				"skaven_pack_master",
+				"skaven_gutter_runner"
+			},
+			difficulty_requirement = HARDEST
+		},
+		{
+			"delay",
+			duration = 10
+		},
+		{
+			"disable_bots_in_carry_event"
+		},
+		{
+			"continue_when",
+			duration = 20,
+			condition = function (t)
+				return num_spawned_enemies() < 20
+			end
+		},
+		{
+			"control_hordes",
+			enable = true
+		},
+		{
+			"flow_event",
+			flow_event_name = "trail_mid_event_01_done"
+		}
+	}
+
+	--Second lever
+	TerrorEventBlueprints.dlc_wizards_trail.trail_mid_event_04 = {
+		{
+			"set_master_event_running",
+			name = "trail_mid_event_04"
+		},
+		{
+			"disable_kick"
+		},
+		{
+			"set_freeze_condition",
+			max_active_enemies = 100
+		},
+		{
+			"control_hordes",
+			enable = false
+		},
+		{
+			"spawn_special",
+			amount = 1,
+			breed_name = {
+				"skaven_warpfire_thrower",
+				"skaven_ratling_gunner"
+			}
+		},
+		{
+			"event_horde",
+			spawner_id = "trail_mid_event_spawn_04",
+			composition_type = "onslaught_storm_vermin_white_medium"
+		},
+		{
+			"event_horde",
+			spawner_id = "trail_mid_event_spawn_04",
+			composition_type = "onslaught_storm_vermin_white_medium"
+		},
+		{
+			"spawn_at_raw",
+			spawner_id = "buffed_enemy_spawn_1",
+			breed_name = "skaven_dummy_slave",
+			optional_data = {
+				spawned_func = slaanesh_buff_spawn_function
+			}
+		},
+		{
+			"spawn_at_raw",
+			spawner_id = "buffed_enemy_spawn_2",
+			breed_name = "skaven_dummy_slave",
+			optional_data = {
+				spawned_func = slaanesh_buff_spawn_function
+			}
+		},
+		{
+			"spawn_at_raw",
+			spawner_id = "buffed_enemy_spawn_3",
+			breed_name = "skaven_dummy_slave",
+			optional_data = {
+				spawned_func = slaanesh_buff_spawn_function
+			}
+		},
+		{
+			"spawn_at_raw",
+			spawner_id = "trail_mid_event_04_special",
+			breed_name = {
+				"chaos_vortex_sorcerer",
+				"skaven_gutter_runner"
+			}
+		},
+		{
+			"delay",
+			duration = 5
+		},
+		{
+			"spawn_at_raw",
+			spawner_id = "trail_mid_event_04_boss",
+			breed_name = {
+				"skaven_ratling_gunner",
+				"skaven_poison_wind_globadier",
+				"skaven_warpfire_thrower",
+				"skaven_pack_master"
+			},
+			difficulty_amount = {
+				hardest = 2,
+				hard = 1,
+				harder = 1,
+				cataclysm = 2,
+				normal = 1
+			}
+		},
+		{
+			"event_horde",
+			limit_spawners = 4,
+			spawner_id = "trail_mid_event_spawn_04",
+			composition_type = "event_extra_spice_medium"
+		},
+		{
+			"delay",
+			duration = 5
+		},
+		{
+			"event_horde",
+			limit_spawners = 8,
+			spawner_id = "trail_mid_event_spawn_02",
+			composition_type = "event_medium"
+		},
+		{
+			"delay",
+			duration = 5
+		},
+		{
+			"continue_when",
+			duration = 30,
+			condition = function (t)
+				return num_spawned_enemies() < 20
+			end
+		},
+		{
+			"spawn_at_raw",
+			spawner_id = "trail_mid_event_04_special",
+			breed_name = {
+				"chaos_corruptor_sorcerer",
+				"chaos_vortex_sorcerer",
+				"skaven_gutter_runner"
+			}
+		},
+		{
+			"delay",
+			duration = 10
+		},
+		{
+			"spawn_special",
+			amount = 1,
+			breed_name = {
+				"skaven_pack_master",
+				"skaven_gutter_runner",
+				"skaven_warpfire_thrower",
+				"skaven_ratling_gunner"
+			}
+		},
+		{
+			"event_horde",
+			limit_spawners = 6,
+			spawner_id = "trail_mid_event_spawn_04",
+			composition_type = "event_extra_spice_large"
+		},
+		{
+			"disable_bots_in_carry_event"
+		},
+		{
+			"delay",
+			duration = 10
+		},
+		{
+			"continue_when",
+			duration = 20,
+			condition = function (t)
+				return num_spawned_enemies() < 6
+			end
+		},
+		{
+			"control_hordes",
+			enable = true
+		},
+		{
+			"flow_event",
+			flow_event_name = "trail_mid_event_04_done"
+		}
+	}
+
+	TerrorEventBlueprints.dlc_wizards_trail.trail_intro_disable_pacing_end = {
+		{
+			"control_hordes",
+			enable = false
+		},
+		{
+			"control_specials",
+			enable = false
+		},
+		{
+			"control_pacing",
+			enable = false
+		}
+	}
+
+	TerrorEventBlueprints.dlc_wizards_trail.trail_end_event_first_wave = {
+		{
+			"set_master_event_running",
+			name = "trail_end_event_first_wave"
+		},
+		{
+			"disable_kick"
+		},
+		{
+			"enable_bots_in_carry_event"
+		},
+		{
+			"play_stinger",
+			stinger_name = "enemy_horde_chaos_stinger"
+		},
+		{
+			"set_freeze_condition",
+			max_active_enemies = 100
+		},
+		{
+			"event_horde",
+			limit_spawners = 8,
+			spawner_id = "trail_end_event_first_wave",
+			composition_type = "event_medium_chaos"
+		},
+		{
+			"event_horde",
+			spawner_id = "trail_end_event_first_wave",
+			composition_type = "chaos_warriors"
+		},
+		{
+			"delay",
+			duration = 10
+		},
+		{
+			"event_horde",
+			spawner_id = "trail_end_event_first_wave",
+			composition_type = "event_chaos_extra_spice_medium"
+		},
+		{
+			"delay",
+			duration = 10
+		},
+		{
+			"spawn_special",
+			amount = 1,
+			breed_name = {
+				"chaos_vortex_sorcerer",
+				"chaos_corruptor_sorcerer"
+			}
+		},
+		{
+			"continue_when",
+			duration = 30,
+			condition = function (t)
+				return num_spawned_enemies() < 4
+			end
+		},
+		{
+			"event_horde",
+			limit_spawners = 8,
+			spawner_id = "trail_end_event_first_wave",
+			composition_type = "event_small_chaos"
+		},
+		{
+			"delay",
+			duration = 10
+		},
+		{
+			"continue_when",
+			duration = 30,
+			condition = function (t)
+				return num_spawned_enemies() < 4
+			end
+		},
+		{
+			"event_horde",
+			limit_spawners = 8,
+			spawner_id = "trail_end_event_first_wave",
+			composition_type = "event_small_chaos"
+		},
+		{
+			"delay",
+			duration = 10
+		},
+		{
+			"continue_when",
+			duration = 30,
+			condition = function (t)
+				return num_spawned_enemies() < 4
+			end
+		},
+		{
+			"flow_event",
+			flow_event_name = "trail_end_event_first_wave_done"
+		}
+	}
+
+	TerrorEventBlueprints.dlc_wizards_trail.trail_end_event_01 = {
+		{
+			"set_master_event_running",
+			name = "trail_end_event_01"
+		},
+		{
+			"disable_kick"
+		},
+		{
+			"enable_bots_in_carry_event"
+		},
+		{
+			"play_stinger",
+			stinger_name = "enemy_horde_chaos_stinger"
+		},
+		{
+			"set_freeze_condition",
+			max_active_enemies = 100
+		},
+		{
+			"event_horde",
+			spawner_id = "trail_end_event_spawner_1",
+			composition_type = "event_large_chaos"
+		},
+		{
+			"delay",
+			duration = 10
+		},
+		{
+			"event_horde",
+			spawner_id = "trail_end_event_spawner_4",
+			composition_type = "chaos_berzerkers_medium"
+		},
+		{
+			"spawn_special",
+			amount = 1,
+			breed_name = {
+				"chaos_corruptor_sorcerer",
+				"chaos_vortex_sorcerer"
+			}
+		},
+		{
+			"delay",
+			duration = 10
+		},
+		{
+			"event_horde",
+			spawner_id = "trail_end_event_spawner_2",
+			composition_type = "event_medium_chaos"
+		},
+		{
+			"delay",
+			duration = 10
+		},
+		{
+			"continue_when",
+			duration = 30,
+			condition = function (t)
+				return num_spawned_enemies() < 8
+			end
+		},
+		{
+			"spawn_at_raw",
+			spawner_id = "trail_end_event_boss",
+			breed_name = {
+				"chaos_spawn",
+				"chaos_troll",
+				"skaven_stormfiend"
+			},
+			optional_data = {
+				enhancements = enhancement_5
+			}
+		},
+		{
+			"spawn_special",
+			amount = 1,
+			breed_name = {
+				"chaos_vortex_sorcerer",
+				"chaos_corruptor_sorcerer"
+			}
+		},
+		{
+			"delay",
+			duration = 10
+		},
+		{
+			"event_horde",
+			spawner_id = "trail_end_event_spawner_under_water",
+			composition_type = "event_chaos_extra_spice_medium"
+		},
+		{
+			"delay",
+			duration = 10
+		},
+		{
+			"spawn_special",
+			amount = 1,
+			breed_name = {
+				"chaos_corruptor_sorcerer",
+				"chaos_vortex_sorcerer"
+			}
+		},
+		{
+			"delay",
+			duration = 10
+		},
+		{
+			"continue_when",
+			duration = 30,
+			condition = function (t)
+				return num_spawned_enemies() < 8
+			end
+		},
+		{
+			"event_horde",
+			limit_spawners = 4,
+			spawner_id = "trail_end_event_spawner_under_water",
+			composition_type = "event_medium_chaos"
+		},
+		{
+			"delay",
+			duration = 10
+		},
+		{
+			"event_horde",
+			spawner_id = "trail_end_event_spawner_4",
+			composition_type = "chaos_berzerkers_small"
+		},
+		{
+			"delay",
+			duration = 10
+		},
+		{
+			"continue_when",
+			duration = 30,
+			condition = function (t)
+				return num_spawned_enemies() < 8
+			end
+		},
+		{
+			"flow_event",
+			flow_event_name = "trail_end_event_01_done"
+		}
+	}
+
+	TerrorEventBlueprints.dlc_wizards_trail.trail_end_event_urn_guards_01 = {
+		{
+			"event_horde",
+			spawner_id = "trail_end_event_urn_01",
+			composition_type = "chaos_berzerkers_medium"
+		},
+		{
+			"event_horde",
+			spawner_id = "trail_end_event_urn_01",
+			composition_type = "chaos_shields"
+		},
+		{
+			"delay",
+			duration = 3
+		},
+		{
+			"event_horde",
+			spawner_id = "trail_end_event_urn_01",
+			composition_type = "chaos_raiders_medium"
+		},
+		{
+			"delay",
+			duration = 10
+		},
+		{
+			"continue_when",
+			duration = 20,
+			condition = function (t)
+				return num_spawned_enemies() < 20
+			end
+		},
+		{
+			"flow_event",
+			flow_event_name = "trail_end_event_urn_guards_01_done"
+		}
+	}
+
+	TerrorEventBlueprints.dlc_wizards_trail.trail_end_event_urn_guards_02 = {
+		{
+			"event_horde",
+			spawner_id = "trail_end_event_urn_02",
+			composition_type = "chaos_berzerkers_medium"
+		},
+		{
+			"event_horde",
+			spawner_id = "trail_end_event_urn_02",
+			composition_type = "chaos_warriors"
+		},
+		{
+			"delay",
+			duration = 3
+		},
+		{
+			"spawn_at_raw",
+			spawner_id = "trail_end_event_urn_02",
+			amount = 1,
+			breed_name = {
+				"chaos_vortex_sorcerer",
+				"chaos_corruptor_sorcerer",
+				"skaven_gutter_runner"
+			}
+		},
+		{
+			"delay",
+			duration = 10
+		},
+		{
+			"continue_when",
+			duration = 20,
+			condition = function (t)
+				return num_spawned_enemies() < 6
+			end
+		},
+		{
+			"flow_event",
+			flow_event_name = "trail_end_event_urn_guards_02_done"
+		}
+	}
+
+	TerrorEventBlueprints.dlc_wizards_trail.trail_end_event_urn_guards_03 = {
+		{
+			"event_horde",
+			spawner_id = "trail_end_event_urn_03",
+			composition_type = "event_small_fanatics"
+		},
+		{
+			"event_horde",
+			spawner_id = "trail_end_event_urn_03",
+			composition_type = "event_chaos_extra_spice_medium"
+		},
+		{
+			"delay",
+			duration = 3
+		},
+		{
+			"event_horde",
+			spawner_id = "trail_end_event_urn_03",
+			composition_type = "chaos_raiders_medium"
+		},
+		{
+			"event_horde",
+			spawner_id = "trail_end_event_urn_03",
+			composition_type = "chaos_raiders_medium"
+		},
+		{
+			"delay",
+			duration = 10
+		},
+		{
+			"continue_when",
+			duration = 20,
+			condition = function (t)
+				return num_spawned_enemies() < 20
+			end
+		},
+		{
+			"flow_event",
+			flow_event_name = "trail_end_event_urn_guards_03_done"
+		}
+	}
+
+	TerrorEventBlueprints.dlc_wizards_trail.trail_end_event_03 = {
+		{
+			"set_master_event_running",
+			name = "trail_end_event_03"
+		},
+		{
+			"disable_kick"
+		},
+		{
+			"enable_bots_in_carry_event"
+		},
+		{
+			"play_stinger",
+			stinger_name = "enemy_horde_chaos_stinger"
+		},
+		{
+			"set_freeze_condition",
+			max_active_enemies = 100
+		},
+		{
+			"event_horde",
+			spawner_id = "trail_end_event_spawner_under_water",
+			composition_type = "event_medium_chaos"
+		},
+		{
+			"delay",
+			duration = 2
+		},
+		{
+			"event_horde",
+			spawner_id = "trail_end_event_urn_03",
+			composition_type = "event_chaos_extra_spice_medium"
+		},
+		{
+			"delay",
+			duration = 3
+		},
+		{
+			"spawn_special",
+			amount = 1,
+			breed_name = {
+				"chaos_vortex_sorcerer",
+				"chaos_corruptor_sorcerer"
+			}
+		},
+		{
+			"delay",
+			duration = 10
+		},
+		{
+			"continue_when",
+			duration = 30,
+			condition = function (t)
+				return num_spawned_enemies() < 20
+			end
+		},
+		{
+			"delay",
+			duration = 5
+		},
+		{
+			"event_horde",
+			spawner_id = "trail_end_event_urn_02",
+			composition_type = "chaos_berzerkers_medium"
+		},
+		{
+			"spawn_special",
+			amount = 1,
+			breed_name = {
+				"chaos_corruptor_sorcerer",
+				"chaos_vortex_sorcerer",
+				"skaven_gutter_runner",
+				"skaven_pack_master"
+			}
+		},
+		{
+			"event_horde",
+			limit_spawners = 6,
+			spawner_id = "trail_end_event_last_wave_olesya",
+			composition_type = "event_medium_chaos"
+		},
+		{
+			"delay",
+			duration = 45
+		},
+		{
+			"continue_when",
+			duration = 60,
+			condition = function (t)
+				return num_spawned_enemies() < 20
+			end
+		},
+		{
+			"event_horde",
+			spawner_id = "trail_end_event_spawner_3",
+			composition_type = "chaos_warriors"
+		},
+		{
+			"event_horde",
+			spawner_id = "trail_end_event_spawner_3",
+			composition_type = "chaos_warriors"
+		},
+		{
+			"event_horde",
+			limit_spawners = 6,
+			spawner_id = "trail_end_event_first_wave",
+			composition_type = "event_medium_chaos"
+		},
+		{
+			"spawn_special",
+			amount = 1,
+			breed_name = {
+				"chaos_vortex_sorcerer",
+				"chaos_corruptor_sorcerer",
+				"skaven_gutter_runner",
+				"skaven_pack_master"
+			}
+		},
+		{
+			"delay",
+			duration = 60
+		},
+		{
+			"continue_when",
+			duration = 60,
+			condition = function (t)
+				return num_spawned_enemies() < 20
+			end
+		},
+		{
+			"event_horde",
+			spawner_id = "trail_end_event_spawner_1",
+			composition_type = "chaos_warriors"
+		},
+		{
+			"event_horde",
+			limit_spawners = 6,
+			spawner_id = "trail_end_event_first_wave",
+			composition_type = "event_medium_chaos"
+		},
+		{
+			"spawn_special",
+			amount = 1,
+			breed_name = {
+				"chaos_corruptor_sorcerer",
+				"chaos_vortex_sorcerer",
+				"skaven_gutter_runner",
+				"skaven_pack_master"
+			}
+		},
+		{
+			"delay",
+			duration = 10
+		},
+		{
+			"continue_when",
+			duration = 60,
+			condition = function (t)
+				return num_spawned_enemies() < 20
+			end
+		},
+		{
+			"flow_event",
+			flow_event_name = "trail_end_event_03_done"
+		}
+	}
+
+	TerrorEventBlueprints.dlc_wizards_trail.trail_end_event_constant = {
+		{
+			"enable_bots_in_carry_event"
+		},
+		{
+			"set_freeze_condition",
+			max_active_enemies = 30
+		},
+		{
+			"set_master_event_running",
+			name = "trail_end_event_constant"
+		},
+		{
+			"control_pacing",
+			enable = false
+		},
+		{
+			"event_horde",
+			limit_spawners = 8,
+			spawner_id = "trail_end_event_spawner_under_water",
+			composition_type = "event_small_fanatics"
+		},
+		{
+			"event_horde",
+			limit_spawners = 8,
+			spawner_id = "trail_end_event_spawner_1",
+			composition_type = "event_maulers_medium"
+		},
+		{
+			"event_horde",
+			limit_spawners = 8,
+			spawner_id = "trail_end_event_spawner_1",
+			composition_type = "event_maulers_medium"
+		},
+		{
+			"delay",
+			duration = 20
+		},
+		{
+			"event_horde",
+			limit_spawners = 8,
+			spawner_id = "trail_end_event_spawner_under_water",
+			composition_type = "event_medium_chaos"
+		},
+		{
+			"event_horde",
+			limit_spawners = 8,
+			spawner_id = "trail_end_event_spawner_1",
+			composition_type = "chaos_warriors"
+		},
+		{
+			"event_horde",
+			limit_spawners = 8,
+			spawner_id = "trail_end_event_spawner_1",
+			composition_type = "chaos_berzerkers_medium"
+		},
+		{
+			"delay",
+			duration = 20
+		},
+		{
+			"continue_when",
+			duration = 30,
+			condition = function (t)
+				return count_event_breed("chaos_fanatic") < 20
+			end
+		},
+		{
+			"flow_event",
+			flow_event_name = "trail_end_event_constant_done"
+		}
+	}
+
+	TerrorEventBlueprints.dlc_wizards_trail.trail_end_event_torch_hunter = {
+		{
+			"spawn_special",
+			amount = 1,
+			breed_name = {
+				"chaos_vortex_sorcerer",
+				"chaos_corruptor_sorcerer",
+				"skaven_gutter_runner",
+				"skaven_warpfire_thrower",
+				"skaven_ratling_gunner"
+			}
+		},
+		{
+			"spawn_special",
+			amount = 1,
+			breed_name = {
+				"chaos_corruptor_sorcerer",
+				"chaos_vortex_sorcerer",
+				"skaven_pack_master",
+				"skaven_gutter_runner"
+			},
+			difficulty_requirement = HARDEST
+		}
+	}
+
+	TerrorEventBlueprints.dlc_wizards_trail.trail_enable_pacing_end_run = {
+		{
+			"control_hordes",
+			enable = false
+		},
+		{
+			"control_specials",
+			enable = false
+		},
+		{
+			"control_pacing",
+			enable = false
+		}
+	}
+
 	create_weights()
 
 	mod:enable_all_hooks()
@@ -26606,12 +28112,12 @@ end
 mutator.stop = function()
 
 	TerrorEventBlueprints = mutator.OriginalTerrorEventBlueprints
-	--HordeCompositions = mutator.OriginalHordeCompositions
-	--PackSpawningSettings = mutator.OriginalPackSpawningSettings
-	--PacingSettings.default = mutator.OriginalPacingSettingsDefault
-	--PacingSettings.chaos = mutator.OriginalPacingSettingsChaos
-	--SpecialsSettings = mutator.OriginalSpecialsSettings
-	--BossSettings = mutator.OriginalBossSettings
+	HordeCompositions = mutator.OriginalHordeCompositions
+	PackSpawningSettings = mutator.OriginalPackSpawningSettings
+	PacingSettings.default = mutator.OriginalPacingSettingsDefault
+	PacingSettings.chaos = mutator.OriginalPacingSettingsChaos
+	SpecialsSettings = mutator.OriginalSpecialsSettings
+	BossSettings = mutator.OriginalBossSettings
 	RecycleSettings.push_horde_if_num_alive_grunts_above = mutator.OriginalRecycleSettings.push_horde_if_num_alive_grunts_above
 	RecycleSettings.max_grunts = mutator.OriginalRecycleSettings.max_grunts
 
@@ -26814,11 +28320,6 @@ mutator.stop = function()
 	Breeds.skaven_storm_vermin.hit_mass_counts = BreedTweaks.hit_mass_counts.stormvermin
 	Breeds.skaven_storm_vermin.bloodlust_health = BreedTweaks.bloodlust_health.skaven_elite
 	Breeds.skaven_storm_vermin.size_variation_range = { 1.1, 1.175 }
-	UnitVariationSettings.skaven_storm_vermin.material_variations.cloth_tint.min = 0
-	UnitVariationSettings.skaven_storm_vermin.material_variations.cloth_tint.max = 30
-	UnitVariationSettings.skaven_storm_vermin.material_variations.skin_tint.min = 0
-	UnitVariationSettings.skaven_storm_vermin.material_variations.skin_tint.max = 5
-
 	---------------------
 
 	create_weights()
@@ -26840,29 +28341,24 @@ mod:hook(MatchmakingManager, "rpc_matchmaking_request_join_lobby", function (fun
 	return func(self, channel_id, lobby_id, friend_join, client_dlc_unlocked_array)
 end)
 
-mod:network_register("rpc_enable_white_sv", function (sender, enable)
-	UnitVariationSettings.skaven_storm_vermin.material_variations.cloth_tint.min = 31
-	UnitVariationSettings.skaven_storm_vermin.material_variations.cloth_tint.max = 31
-	UnitVariationSettings.skaven_storm_vermin.material_variations.skin_tint.min = 1
-	UnitVariationSettings.skaven_storm_vermin.material_variations.skin_tint.max = 1
-end)
-
-mod:network_register("rpc_disable_white_sv", function (sender, enable)
-	UnitVariationSettings.skaven_storm_vermin.material_variations.cloth_tint.min = 0
-	UnitVariationSettings.skaven_storm_vermin.material_variations.cloth_tint.max = 30
-	UnitVariationSettings.skaven_storm_vermin.material_variations.skin_tint.min = 0
-	UnitVariationSettings.skaven_storm_vermin.material_variations.skin_tint.max = 5
+mod:network_register("rpc_activate_buffed_enemies", function (sender, enable)
+	if enable ~= mutator.active then
+		if enable then
+			mod:dofile("scripts/mods/DutchSpiceTourney/SpicyEnemies/BuffedEnemies")
+			mod:echo("Dutch Enemies modified")
+		end
+	end
 end)
 
 mod:hook_safe("ChatManager", "_add_message_to_list", function (self, channel_id, message_sender, local_player_id, message, is_system_message, pop_chat, is_dev, message_type, link, data)
 	if message == JOIN_MESSAGE and not mutator.active then
-		mod:network_send("rpc_enable_white_sv", "local", true)
+		mod:network_send("rpc_activate_buffed_enemies", "local", true)
 	end
 end)
 
 mod.on_user_joined = function (player)
 	if mutator.active then
-		mod:network_send("rpc_enable_white_sv", player.peer_id, mutator.active)
+		mod:network_send("rpc_activate_buffed_enemies", player.peer_id, mutator.active)
 	end
 end
 
@@ -26881,13 +28377,13 @@ mutator.toggle = function()
 			return
 		end
 		mutator.start()
-		mod:network_send("rpc_enable_white_sv", "all", true)
+		mod:dofile("scripts/mods/DutchSpiceTourney/SpicyEnemies/BuffedEnemies")
+
+		mod:network_send("rpc_activate_buffed_enemies", "all", true)
 
 		mod:chat_broadcast("Dutch Spice ENABLED.")
 	else
 		mutator.stop()
-		mod:network_send("rpc_disable_white_sv", "all", true)
-
 		mod:chat_broadcast("Thats FUCKING cringe")
 	end
 end
@@ -26911,4 +28407,10 @@ end
 mod:command("dutch_spice_tourney", "Toggle Dutch Spice. Must be host and in the keep.", function() mutator.toggle() end)
 if not mutator.active then
 	mod:disable_all_hooks()
+end
+
+mod.on_all_mods_loaded = function (self)
+	check_for_buffs()
+
+	return
 end
